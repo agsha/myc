@@ -88,8 +88,9 @@ struct NioForLoop {
     long bytesRead=0;
     long durationMillis=0;
 };
-template class std::vector<shared_ptr<NioForLoop>>;
-template class std::vector<shared_ptr<ServerConnState>>;
+// uncomment to inspect these vectors (by preventing inlining
+//template class std::vector<shared_ptr<NioForLoop>>;
+//template class std::vector<shared_ptr<ServerConnState>>;
 
 struct IpPort {
     string ip;
