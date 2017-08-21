@@ -2,6 +2,7 @@
 // Created by Sharath Gururaj on 7/26/17.
 //
 #include <algorithm>    // std::max
+#include <cstring>
 #include <iostream>     // std::cout
 #include "latret.h"
 
@@ -61,11 +62,11 @@ LatRet LatencyTimerThreadUnsafe::snap() {
 }
 
 void LatencyTimerThreadUnsafe::reset() {
-    memset(bins, 0, sizeof(bins));
+    std::memset(bins, 0, sizeof(bins));
 }
 
 LatencyTimerThreadUnsafe::LatencyTimerThreadUnsafe() {
-    memset(bins, 0, sizeof(bins));
+    std::memset(bins, 0, sizeof(bins));
 }
 
 //int main1() {

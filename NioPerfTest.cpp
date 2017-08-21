@@ -1,3 +1,4 @@
+#include <chrono>
 #include <iostream>
 #include <utility>
 #include <xmlrpc-c/client.hpp>
@@ -14,6 +15,8 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <mutex>
+#include <condition_variable>
 
 
 #include <xmlrpc-c/base.hpp>
@@ -268,7 +271,7 @@ void rpcServer(xmlrpc_c::method* api, const unsigned int port, string method) {
     }
 }
 
-void NioPerfTest::go(unsigned long argc, const char **argv) {
+void NioPerfTest::go(unsigned long argc, const char *argv[]) {
     vector<string> args(argv+1, argv+argc);
     if (argc==0) {
         throw ("Usage: java NetPerfNio type <client|gateway|server> clientRmis <ip:port>[,<ip:port>] serverRmi <ip:port> serverReal <ip:port> time <secs[default=10]> gatewayRmiPort <default:5000> serverRmiPort <default:5001> clientRmiPort<default:5002> ipAddr <ipaddress for rmi <optional)");
@@ -410,25 +413,15 @@ vector<IpPort> NioPerfTest::parseIpPort(const string& str, int defaultPort) {
 
 void NioPerfTest::server() {
     cout<<"came in server. This is "<<(long)this<<endl;
-
-    thread t([this]() {
-        ServerRmi rmi(this);
-        rpcServer(&rmi, (unsigned int)serverRmiPort, string("server"));
-    });
-    t.detach();
-
+    ServerRmi rmi(this);
+    rpcServer(&rmi, (unsigned int)serverRmiPort, string("server"));
 }
 
 void NioPerfTest::client() {
     cout<<"came in client. This is "<<(long)this<<endl;
-
-    thread t([this]() {
-        ServerRmi rmi(this);
-        cout<<"client listening on "<<clientRmiPort<<endl;
-        rpcServer(&rmi, (unsigned int)clientRmiPort, string("myclient"));
-    });
-    t.detach();
-
+    ServerRmi rmi(this);
+    cout<<"client listening on "<<clientRmiPort<<endl;
+    rpcServer(&rmi, (unsigned int)clientRmiPort, string("myclient"));
 }
 
 void NioPerfTest::gateway() {
@@ -460,7 +453,10 @@ void NioPerfTest::gateway() {
             xmlrpc_c::paramList myParams;
             auto sz = (int)clientUrls.size();
             cout<<"gateway client sz "<<sz<<endl;
+            sc{}<<testcase<<endl;
             rmi.call(serverUrl, "server", myParams.addc("serverInit").addc(testcase).addc(sz), &result);
+            sc{}<<"finished server rmi call"<<endl;
+
         }
 
         {
@@ -619,7 +615,7 @@ void NioPerfTest::client_tcp_stream(ClientState& clientState) {
                 break;
             }
         }
-        long bytesNow = write(fd, buffer, sizeof(buffer)/sizeof(buffer[0]));
+        long bytesNow = write(fd, buffer, msg);
 
         if(bytesNow < 0) {
             perror("something went wrong in tcp_stream client write");
@@ -656,7 +652,7 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
         }
         long tot = 0;
         while(tot < msg) {
-            long bytesNow = write(fd, buffer, sizeof(buffer)/sizeof(buffer[0]));
+            long bytesNow = write(fd, buffer, msg);
             if(bytesNow <= 0) {
                 perror("something went wrong in tcp_stream client write");
                 break;
@@ -667,7 +663,7 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
 
         tot = 0;
         while(tot < msg) {
-            long bytesNow = read(fd, buffer, sizeof(buffer)/sizeof(buffer[0]));
+            long bytesNow = read(fd, buffer, msg);
             if(bytesNow <= 0) {
                 perror("something went wrong in tcp_stream client write");
                 break;
@@ -1071,8 +1067,12 @@ string NioPerfTest::serverResult() {
     return js.dump(2);
 }
 
-int main(int const /*unused*/, const char ** const /*unused*/) {
-    doTest();
-//    do1();
+void go(int argc, const char *argv[]) {
+  auto *server = new NioPerfTest;
+  server->go(argc, argv);
+}
+int main(int argc , const char * argv[]) {
+   // doTest();
+    go(argc, argv);
     return 0;
 }
