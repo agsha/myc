@@ -221,7 +221,10 @@ public:
         unsigned int arg=0;
         string methodName = paramList.getString(arg++);
         if (methodName == "serverInit") {
-            proxy->serverInit(paramList.getString(arg++), paramList.getInt(arg++));
+            auto j3 = nlohmann::json::parse(paramList.getString(arg));
+            proxy->serverInit(paramList.getString(arg++), j3["sz"]);
+            // proxy->serverInit(paramList.getString(arg++), paramList.getInt(arg++));
+
             paramList.verifyEnd(arg);
             *retvalP = xmlrpc_c::value_int(0);
         } else if(methodName == "clientInit") {
@@ -346,7 +349,7 @@ void split(const string& s, char delim,vector<string>& v) {
 
 
 void doTest() {
-    {
+    thread server([]{
         auto *server = new NioPerfTest;
         string s = "progname type server time 10 serverReal 127.0.0.1:8000";
         vector<string> v;
@@ -355,29 +358,31 @@ void doTest() {
         for(int i=0; i<v.size(); i++) {
             argv[i] = strdup(v[i].c_str());
         }
-        // go will create a new thread to start listening
         server->go(v.size(), argv);
-    }
+    });
 
     ev_sleep(1.0);
 
     int clients = 1;
     string a;
+    vector<thread> clientThreads;
     for(int i=0; i<clients; i++) {
         a+="127.0.0.1:"+to_string(i+5002);
         if(i<clients-1) {
             a+=",";
         }
-        auto *client = new NioPerfTest;
-//    string s = "prog_name_placeholder type server time 10 serverReal 127.0.0.1:8000";
-        string s = "progname type client serverReal 127.0.0.1:8000 clientRmiPort "+to_string(i+5002);
-        vector<string> v;
-        split(s, ' ', v);
-        const char *argv[v.size()];
-        for(int j=0; j<v.size(); j++) {
-            argv[j] = strdup(v[j].c_str());
-        }
-        client->go(v.size(), argv);
+        clientThreads.emplace_back([i]() {
+            auto *client = new NioPerfTest;
+    //    string s = "prog_name_placeholder type server time 10 serverReal 127.0.0.1:8000";
+            string s = "progname type client serverReal 127.0.0.1:8000 clientRmiPort "+to_string(i+5002);
+            vector<string> v;
+            split(s, ' ', v);
+            const char *argv[v.size()];
+            for(int j=0; j<v.size(); j++) {
+                argv[j] = strdup(v[j].c_str());
+            }
+            client->go(v.size(), argv);
+        });
     }
 
     sleep(1);
@@ -392,6 +397,10 @@ void doTest() {
         argv[i] = strdup(v[i].c_str());
     }
     gateway->go(v.size(), argv);
+    server.join();
+    for(auto &c: clientThreads) {
+        c.join();
+    }
 }
 
 vector<IpPort> NioPerfTest::parseIpPort(const string& str, int defaultPort) {
@@ -448,13 +457,17 @@ void NioPerfTest::gateway() {
         }
         string testcase = obj.dump(4);
         {
+            auto myobj = obj;
             xmlrpc_c::clientSimple rmi;
             xmlrpc_c::value result;
             xmlrpc_c::paramList myParams;
             auto sz = (int)clientUrls.size();
+            myobj["sz"] = sz;
             cout<<"gateway client sz "<<sz<<endl;
-            sc{}<<testcase<<endl;
-            rmi.call(serverUrl, "server", myParams.addc("serverInit").addc(testcase).addc(sz), &result);
+            string mytestcase = myobj.dump(4);
+            sc{}<<mytestcase<<endl;
+            //rmi.call(serverUrl, "server", myParams.addc("serverInit").addc(testcase).add(xmlrpc_c::value_int(sz)), &result);
+            rmi.call(serverUrl, "server", "ss" , &result, "serverInit", mytestcase.c_str());
             sc{}<<"finished server rmi call"<<endl;
 
         }
@@ -1072,7 +1085,7 @@ void go(int argc, const char *argv[]) {
   server->go(argc, argv);
 }
 int main(int argc , const char * argv[]) {
-   // doTest();
-    go(argc, argv);
+    doTest();
+   // go(argc, argv);
     return 0;
 }
