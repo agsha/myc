@@ -54,11 +54,10 @@ struct NioForLoop;
 
 struct ServerConnState {
     ev_io watcher;
-    // some buffer
     string clientIp;
     long durationMillis=0;
     long bytes=0;
-    NioForLoop *pNioForLoop;
+    shared_ptr<NioForLoop>pNioForLoop;
     vector<char> buffer;
     int bytesReadSoFar=0;
     bool writing=false;
@@ -68,12 +67,12 @@ struct ServerConnState {
 
 struct my_ev_prepare {
     ev_prepare prepare;
-    NioForLoop* pNioForLoop;
+    shared_ptr<NioForLoop> pNioForLoop;
 };
 
 struct my_ev_check {
     ev_check check;
-    NioForLoop* pNioForLoop;
+    shared_ptr<NioForLoop> pNioForLoop;
 };
 
 struct NioForLoop {
@@ -81,12 +80,16 @@ struct NioForLoop {
     struct my_ev_prepare prepare;
     struct ev_loop *loop;
     std::chrono::high_resolution_clock::time_point tp;
-    vector<ServerConnState> connStates;
+    vector<shared_ptr<ServerConnState>> connStates;
     LatencyTimerThreadUnsafe selectLat;
     LatencyTimerThreadUnsafe readLat;
     LatencyTimerThreadUnsafe writeLat;
     LatencyTimerThreadUnsafe totalLat;
+    long bytesRead=0;
+    long durationMillis=0;
 };
+template class std::vector<shared_ptr<NioForLoop>>;
+template class std::vector<shared_ptr<ServerConnState>>;
 
 struct IpPort {
     string ip;
@@ -106,13 +109,12 @@ public:
     std::condition_variable serverInitCv;
     int numClientsConnected = 0;
     int totClients = 0;
-    vector<NioForLoop> nioForLoops;
+    vector<shared_ptr<NioForLoop>> nioForLoops;
     vector<thread> nioForLoopThreads;
     nlohmann::json testcaseObj; // the parsed current test case
     void serverInit(const string&testcase, int numClients);
 
 
-    void serverListenCb(EV_P_ ev_io *w, int revents);
     void serverRunLoop(NioForLoop& nioForLoop);
     void server_tcp_stream_cb(EV_P_ ev_io *w, int revents);
     void server_tcp_rr_cb(EV_P_ ev_io *w, int revents);
@@ -128,7 +130,7 @@ public:
     void server();
 
     void client();
-    vector<ClientState> clientStates;
+    vector<shared_ptr<ClientState>> clientStates;
     vector<thread> clientThreads;
 
     void clientInit(const string & testcase);
@@ -143,20 +145,11 @@ public:
 };
 
 
-// a trampoline
-static void stdin_cb (EV_P_ ev_io *w, int revents)
-{
-    auto pobj = (NioPerfTest *)w->data;
-    pobj->serverListenCb(loop, w, revents);
-}
 
 // a trampoline
 static void tcp_stream_cb (EV_P_ ev_io *w, int revents)
 {
     auto pobj = (NioPerfTest *)w->data;
-    if(pobj==0L) {
-        sc{}<<"wtfff in trampoline"<<endl;
-    }
     pobj->server_tcp_stream_cb(loop, w, revents);
 }
 
@@ -187,14 +180,11 @@ static pair<string, string> toStat(LatRet latRet, string const &p) {
     char fmt[1024] ;
     char prefix[100];
     strncpy(prefix, p.c_str(), sizeof(prefix)/sizeof(prefix[0]));
-    sc{}<<"after strncpy tostat";
     snprintf(fmt, sizeof(fmt)/sizeof(fmt[0]), "%sp50,%sp75Nanos,%sp90Nanos,%sp95Nanos,%sp99Nanos,%sp99.9Nanos,%smaxNanos,%scount", prefix, prefix, prefix, prefix, prefix, prefix, prefix, prefix);
-    sc{}<<"after snprintf tostat";
 
     string s1(fmt);
 
     snprintf(fmt, sizeof(fmt)/sizeof(fmt[0]), "%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%ld,%ld", latRet.nanos[1], latRet.nanos[2], latRet.nanos[3], latRet.nanos[4], latRet.nanos[5], latRet.nanos[6], latRet.maxNanos, latRet.total);
-    sc{}<<"after snprintf 2 tostat";
 
     string s2(fmt);
 
@@ -211,6 +201,8 @@ void pv(vector<string>& v) {
 }
 
 
+// dispatches xml rpc calls to appropriate methods.
+// pretty dumass but works
 class ServerRmi : public xmlrpc_c::method {
 private:
     unique_ptr<NioPerfTest> proxy{nullptr};
@@ -585,11 +577,11 @@ void NioPerfTest::clientInit(const string & testcase) {
         if (connect(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0){
             perror("client ERROR connecting");
         }
-        //sleep for 10 ms
-        ev_sleep(0.3);
+        //sleep for 20 ms
+        ev_sleep(0.02);
         sc{}<<"client: connected to server."<<endl;
-        clientStates.emplace_back();
-        clientStates[clientStates.size()-1].sockfd = sockfd;
+        clientStates.emplace_back(new ClientState);
+        clientStates[clientStates.size()-1]->sockfd = sockfd;
     }
 }
 
@@ -599,12 +591,12 @@ void NioPerfTest::clientStart() {
     for(auto &clientState : clientStates) {
         if(testcaseObj["tt"]=="TCP_STREAM") {
             clientThreads.emplace_back([this, &clientState](){
-                this->client_tcp_stream(clientState);
+                this->client_tcp_stream(*clientState);
             });
 
         } else {
             clientThreads.emplace_back([this, &clientState](){
-                this->client_tcp_rr(clientState);
+                this->client_tcp_rr(*clientState);
             });
         }
     }
@@ -681,6 +673,7 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
             }
             tot+=bytesNow;
         }
+        clientState.rttLat.count();
         count++;
     }
     sc{}<<"client side fini"<<endl;
@@ -703,20 +696,17 @@ string NioPerfTest::clientResult() {
 
     string sb = "bytes,durationMillis,p50,p75Nanos,p90Nanos,p95Nanos,p99Nanos,p99.9Nanos,maxNanos,count";
     for(auto &state: clientStates) {
-        sc{}<<"clientresult before closing"<<endl;
 
-        close(state.sockfd);
-        sc{}<<"clientresult after closing"<<endl;
+        close(state->sockfd);
 
         //sleep for 20 ms between closes (dont know why)
         ev_sleep(0.02);
-        auto p = toStat(state.rttLat.snap(), "");
-        sc{}<<"clientresult after toStat"<<endl;
+        auto p = toStat(state->rttLat.snap(), "");
 
-        snprintf(buf, sizeof(buf)/sizeof(buf[0]), "\n%ld,%ld,%s", state.bytes, state.durationMillis, p.second.c_str());
+        snprintf(buf, sizeof(buf)/sizeof(buf[0]), "\n%ld,%ld,%s", state->bytes, state->durationMillis, p.second.c_str());
         sb.append(buf);
     }
-    sc{}<<"client side clientResult "<<sb.c_str()<<endl;
+    sc{}<<"client side clientResult "<<endl;
     return sb;
 }
 
@@ -738,21 +728,21 @@ void NioPerfTest::serverInit(const string &testcase, int numClients) {
 
     //create the event loops
     for(int i=0; i<nioloops; i++) {
-        nioForLoops.emplace_back();
-        NioForLoop& nioForLoop = nioForLoops[nioForLoops.size()-1];
+        nioForLoops.emplace_back(new NioForLoop);
+        auto &nioForLoop = nioForLoops[nioForLoops.size()-1];
         struct ev_loop *loop = ev_loop_new();
-        nioForLoop.loop = loop;
+        nioForLoop->loop = loop;
 
-        nioForLoop.prepare.prepare.data = this;
-        nioForLoop.prepare.pNioForLoop = &nioForLoop;
-        ev_prepare_init((struct ev_prepare *)&nioForLoop.prepare, prepare_cb);
-        ev_prepare_start(nioForLoop.loop, &nioForLoop.prepare.prepare);
+        nioForLoop->prepare.prepare.data = this;
+        nioForLoop->prepare.pNioForLoop = nioForLoop;
+        ev_prepare_init((struct ev_prepare *)&nioForLoop->prepare, prepare_cb);
+        ev_prepare_start(nioForLoop->loop, &nioForLoop->prepare.prepare);
 
 
-        nioForLoop.check.check.data = this;
-        nioForLoop.check.pNioForLoop = &nioForLoop;
-        ev_check_init((struct ev_check *)&nioForLoop.check, check_cb);
-        ev_check_start(nioForLoop.loop, &nioForLoop.check.check);
+        nioForLoop->check.check.data = this;
+        nioForLoop->check.pNioForLoop = nioForLoop;
+        ev_check_init((struct ev_check *)&nioForLoop->check, check_cb);
+        ev_check_start(nioForLoop->loop, &nioForLoop->check.check);
     }
 
     // prepare for listening
@@ -804,50 +794,30 @@ void NioPerfTest::serverInit(const string &testcase, int numClients) {
 
                 fcntl(newsockfd, F_SETFL, O_NONBLOCK);
                 auto whichLoop  = numClientsConnected % nioForLoops.size();
-                NioForLoop& nioForLoop = nioForLoops[whichLoop];
-                nioForLoops[whichLoop].connStates.emplace_back();
-                ServerConnState& state = nioForLoops[whichLoop].connStates[nioForLoops[whichLoop].connStates.size()-1];
-                state.pNioForLoop = &nioForLoop;
-                state.clientIp=string(hoststr)+":"+string(portstr);
-                state.buffer.reserve(msg);
-                state.bytesReadSoFar = 0;
-                state.bytes = 0;
-                state.writing = false;
-                state.writeInterest = false;
-                state.watcher.data = this;
+                shared_ptr<NioForLoop>& nioForLoop = nioForLoops[whichLoop];
+                nioForLoops[whichLoop]->connStates.emplace_back(new ServerConnState);
+                shared_ptr<ServerConnState>& state = nioForLoops[whichLoop]->connStates[nioForLoops[whichLoop]->connStates.size()-1];
+                state->pNioForLoop = nioForLoop;
+                state->clientIp=string(hoststr)+":"+string(portstr);
+                state->buffer.reserve(msg);
+                state->bytesReadSoFar = 0;
+                state->bytes = 0;
+                state->writing = false;
+                state->writeInterest = false;
+                state->watcher.data = this;
                 if(testcaseObj["tt"]=="TCP_STREAM") {
-                    ev_io_init (&state.watcher, tcp_stream_cb, newsockfd, EV_READ);
+                    ev_io_init (&state->watcher, tcp_stream_cb, newsockfd, EV_READ);
                 } else {
-                    ev_io_init (&state.watcher, tcp_rr_cb, newsockfd, EV_READ);
+                    ev_io_init (&state->watcher, tcp_rr_cb, newsockfd, EV_READ);
                 }
 
-                ev_io_start (nioForLoop.loop, &state.watcher);
+                ev_io_start (nioForLoop->loop, &state->watcher);
                 numClientsConnected++;
                 sc{} << "server: accepted a client: "<<numClientsConnected<<" to loop "<<whichLoop<<endl;
             }
             close(sockfd);
         }
         serverInitCv.notify_all();
-
-        //    int msg = testcaseObj["msg"];
-        auto x = std::chrono::high_resolution_clock::now();
-        auto nioForLoop = nioForLoops[0];
-        sc{} << "starting a single nio loop with message size "<<msg<<endl;
-        ev_sleep(2);
-        ev_run(nioForLoop.loop, 0);
-        sc{} << "finished a single event loop. returning"<<endl;
-        auto y = std::chrono::high_resolution_clock::now();
-        auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(y-x).count();
-
-        for(auto &state:nioForLoop.connStates) {
-            ev_io_stop(nioForLoop.loop, &state.watcher);
-            close(state.watcher.fd);
-            state.durationMillis = (nanos/1000);
-        }
-        ev_prepare_stop(nioForLoop.loop, &nioForLoop.prepare.prepare);
-        ev_check_stop(nioForLoop.loop, &nioForLoop.check.check);
-        ev_loop_destroy(nioForLoop.loop);
-
     });
     t.detach();
     sc{}<<"server returning from serverinit"<<endl;
@@ -869,60 +839,33 @@ void NioPerfTest::serverStartNioLoops() {
     sc{}<<"server side serverStartNioLoops"<<endl;
     std::unique_lock<std::mutex> lk(bigFatLock);
     for(auto &loop : nioForLoops) {
-        loop.tp = std::chrono::high_resolution_clock::now();
+        loop->tp = std::chrono::high_resolution_clock::now();
         nioForLoopThreads.emplace_back([this, &loop](){
-            this->serverRunLoop(loop);
+            this->serverRunLoop(*loop);
         });
     }
-//    for(thread& t: nioForLoopThreads) {
-//        t.join();
-//    }
 }
 
 
-//void NioPerfTest::serverRunLoop(NioForLoop& nioForLoop) {
-//    int msg = testcaseObj["msg"];
-//    auto x = std::chrono::high_resolution_clock::now();
-//    sc{} << "starting a single nio loop with message size "<<msg<<endl;
-//    for(auto f:nioForLoop.connStates) {
-//        cout<<""<<endl;
-//    }
-//    ev_sleep(2);
-//    ev_run(nioForLoop.loop, 0);
-//    sc{} << "finished a single event loop. returning"<<endl;
-//    auto y = std::chrono::high_resolution_clock::now();
-//    auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(y-x).count();
-//
-//    for(auto &state:nioForLoop.connStates) {
-//        ev_io_stop(nioForLoop.loop, &state.watcher);
-//        close(state.watcher.fd);
-//        state.durationMillis = (nanos/1000);
-//    }
-//    ev_prepare_stop(nioForLoop.loop, &nioForLoop.prepare.prepare);
-//    ev_check_stop(nioForLoop.loop, &nioForLoop.check.check);
-//    ev_loop_destroy(nioForLoop.loop);
-//}
-
 void NioPerfTest::serverRunLoop(NioForLoop& nioForLoop) {
-//    int msg = testcaseObj["msg"];
-//    while(true) {
-//        for(auto &s : nioForLoop.connStates) {
-//            long bytesNow = read(s.watcher.fd, &s.buffer[0], msg);
-//            if(bytesNow==0) {
-//                goto outer;
-//            }
-//        }
-//    }
-//
-//    outer: for(auto &state:nioForLoop.connStates) {
-//        sc{}<<"watcher is active "<<ev_is_active(&state.watcher)<<endl;
-//        ev_io_stop(nioForLoop.loop, &state.watcher);
-//        close(state.watcher.fd);
-//        state.durationMillis = 10000;
-//    }
-//    ev_prepare_stop(nioForLoop.loop, &nioForLoop.prepare.prepare);
-//    ev_check_stop(nioForLoop.loop, &nioForLoop.check.check);
-//    ev_loop_destroy(nioForLoop.loop);
+    int msg = testcaseObj["msg"];
+    auto x = std::chrono::high_resolution_clock::now();
+    sc{} << "starting a single nio loop with message size "<<msg<<endl;
+    ev_run(nioForLoop.loop, 0);
+    sc{} << "finished a single event loop. returning"<<endl;
+    auto y = std::chrono::high_resolution_clock::now();
+    auto durationMillis = std::chrono::duration_cast<std::chrono::milliseconds>(y-x).count();
+
+    for(auto &state:nioForLoop.connStates) {
+        ev_io_stop(nioForLoop.loop, &state->watcher);
+        close(state->watcher.fd);
+        state->durationMillis = (durationMillis);
+        nioForLoop.bytesRead+=state->bytes;
+        nioForLoop.durationMillis = state->durationMillis;
+    }
+    ev_prepare_stop(nioForLoop.loop, &nioForLoop.prepare.prepare);
+    ev_check_stop(nioForLoop.loop, &nioForLoop.check.check);
+    ev_loop_destroy(nioForLoop.loop);
 }
 
 void NioPerfTest::serverPrepareCb(struct ev_loop *loop, ev_prepare *w, int revents) {
@@ -953,13 +896,7 @@ void NioPerfTest::server_tcp_stream_cb(struct ev_loop *loop, ev_io *w, int reven
     char *buffer = &((pstate->buffer)[0]);
 
     while(pstate->bytesReadSoFar<msg) {
-        if(msg - pstate->bytesReadSoFar > pstate->buffer.capacity()) {
-            sc{}<<"fooooo"<<endl;
-            ev_sleep(1);
-
-        }
         long bytesNow = read(pstate->watcher.fd, buffer, msg - pstate->bytesReadSoFar);
-        sc{}<<"read "<<bytesNow<<endl;
         // check for eof
         if(bytesNow==0) {
             ev_break(loop, EVBREAK_ONE);
@@ -986,7 +923,6 @@ void NioPerfTest::server_tcp_stream_cb(struct ev_loop *loop, ev_io *w, int reven
 }
 
 void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) {
-    sc{}<<"server started tcp_rr"<<endl;
 
     auto pstate = (ServerConnState *)w;
     auto pNioForLoop = pstate->pNioForLoop;
@@ -1014,9 +950,13 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
 
             if(pstate->bytesReadSoFar == msg) {
                 //finished reading
-                // came here implies bytesNow > 0
+                // came here implies bytesNow > 0,
+                // because this is the first time that the above condition has become true
                 break;
             }
+
+            // if bytesNow > 0 but there is still space in the buffer, loop again
+            // until we hit EAGAIN
 
             // check for eof
             if(bytesNow==0) {
@@ -1041,15 +981,15 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
     }
     if(pstate->writing) {
         while(true) {
-            auto x = std::chrono::high_resolution_clock::now();
 
+            auto x = std::chrono::high_resolution_clock::now();
             long bytesNow = write(pstate->watcher.fd, buffer, msg-pstate->bytesReadSoFar);
             auto y = std::chrono::high_resolution_clock::now();
             auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(y-x).count();
-            pNioForLoop->writeLat.count(nanos);
 
             if(bytesNow>=0) {
                 pstate->bytesReadSoFar += bytesNow;
+                pNioForLoop->writeLat.count(nanos);
             }
 
             if(pstate->bytesReadSoFar == msg) {
@@ -1110,17 +1050,20 @@ string NioPerfTest::serverResult() {
 
     for(auto &loop : nioForLoops) {
         string s1, s2;
-        auto p = toStat(loop.selectLat.snap(), "selectLat_");
+        auto p = toStat(loop->selectLat.snap(), "selectLat_");
         s1 += p.first+","; s2+=p.second+",";
 
-        p = toStat(loop.readLat.snap(), "readLat_");
+        p = toStat(loop->readLat.snap(), "readLat_");
         s1 += p.first+","; s2+=p.second+",";
 
-        p = toStat(loop.readLat.snap(), "writeLat_");
+        p = toStat(loop->writeLat.snap(), "writeLat_");
         s1 += p.first+","; s2+=p.second+",";
 
-        p = toStat(loop.totalLat.snap(), "totalLat_");
+        p = toStat(loop->totalLat.snap(), "totalLat_");
         s1 += p.first; s2+=p.second;
+
+        s1.append(",bytes_read,durationMillis");
+        s2.append(",").append(to_string(loop->bytesRead)).append(",").append(to_string(loop->durationMillis));
         js.push_back(s1.append("\n").append(s2));
     }
     sc{}<<"returning from server result"<<endl;
