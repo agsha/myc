@@ -438,10 +438,11 @@ void NioPerfTest::gateway() {
     }
 
 
-    std::ifstream input("/tmp/niotests");
+    std::ifstream input("/home/sharath.g/cpp_netperf_tests/niotests");
     std::stringstream sstr;
     while(input >> sstr.rdbuf());
     auto j3 = nlohmann::json::parse(sstr.str());
+    input.close();
     for(auto &obj : j3) {
         if(obj["completed"]) {
             continue;
@@ -534,7 +535,7 @@ void NioPerfTest::gateway() {
         sc{}<<"bleh"<<obj<<endl;
 //        return;
 
-        std::ofstream o("/tmp/niotests_new");
+        std::ofstream o("/home/sharath.g/cpp_netperf_tests/niotests");
         o << std::setw(4) << j3 << std::endl;
         o.flush();
         o.close();
@@ -825,7 +826,7 @@ void NioPerfTest::serverWaitForClientConnect() {
     sc{}<<"serverWaitForClientConnect waitign for notification"<<endl;
 
     std::unique_lock<std::mutex> lk(serverInitMutex);
-    serverInitCv.wait(lk, [a(numClientsConnected), b(totClients)]{return a==b;});
+    serverInitCv.wait(lk, [this](){return this->numClientsConnected==this->totClients;});
     sc{}<<"serverWaitForClientConnect acquired serverInitMutex"<<endl;
     // why the fuck do we even need this lock here
 //    std::unique_lock<std::mutex> lk1(bigFatLock);
