@@ -49,6 +49,7 @@ std::mutex sc::_mutexPrint{};
 
 struct ClientState {
     int sockfd;
+    long bytesWritten=0, durationMillis=0;
     LatencyTimerThreadUnsafe rttLat;
 };
 
@@ -57,7 +58,7 @@ struct NioForLoop;
 struct ServerConnState {
     ev_io watcher;
     string clientIp;
-    long bytes=0, durationMillis=0, trans=0;
+    long bytes=0, durationMillis=0;
     shared_ptr<NioForLoop>pNioForLoop;
     vector<char> buffer;
     int bytesReadSoFar=0;
@@ -89,6 +90,7 @@ struct NioForLoop {
     int activeConns=0;
     long bytesRead=0;
     long durationMillis=0;
+    long tmp = 0;
 };
 // uncomment to inspect these vectors (by preventing inlining
 //template class std::vector<shared_ptr<NioForLoop>>;
@@ -605,6 +607,8 @@ void NioPerfTest::clientInit(const string & testcase) {
         ev_sleep(0.02);
         clientStates.emplace_back(new ClientState);
         clientStates[clientStates.size()-1]->sockfd = sockfd;
+        clientStates[clientStates.size()-1]->bytesWritten = 0;
+        clientStates[clientStates.size()-1]->durationMillis = 0;
     }
     sc{}<<"client: connected to server: "<<connectionsPerClient<<endl;
 }
@@ -659,9 +663,8 @@ void NioPerfTest::client_tcp_stream(ClientState& clientState) {
     auto end = std::chrono::high_resolution_clock::now();
     auto durationMillis = std::chrono::duration_cast<std::chrono::milliseconds>(end-now).count();
     sc{}<<"client side fini took ms: "<<durationMillis<<endl;
-    clientState.bytes = bytesWritten;
+    clientState.bytesWritten = bytesWritten;
     clientState.durationMillis = durationMillis;
-    clientState.trans = count;
 }
 
 void NioPerfTest::client_tcp_rr(ClientState& clientState) {
@@ -710,9 +713,8 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
     auto end = std::chrono::high_resolution_clock::now();
     auto durationMillis = std::chrono::duration_cast<std::chrono::milliseconds>(end-now).count();
     sc{}<<"client side fini took ms: "<<durationMillis<<endl;
-    clientState.bytes = bytesWritten;
+    clientState.bytesWritten = bytesWritten;
     clientState.durationMillis = durationMillis;
-    clientState.trans = count;
 }
 
 
@@ -730,12 +732,12 @@ string NioPerfTest::clientResult() {
     sc{}<<"client side clientResult joining threads took "<<durationMillis<<" ms "<<endl;
     char buf[1024];
 
-    string sb = "bytes,durationMillis,p50,p75Nanos,p90Nanos,p95Nanos,p99Nanos,p99.9Nanos,maxNanos,count,trans";
+    string sb = "bytes,durationMillis,p50,p75Nanos,p90Nanos,p95Nanos,p99Nanos,p99.9Nanos,maxNanos,count";
     for(auto &state: clientStates) {
 
         auto p = toStat(state->rttLat.snap(), "");
 
-        snprintf(buf, sizeof(buf)/sizeof(buf[0]), "\n%ld,%ld,%s,%ld", state->bytes, state->durationMillis, p.second.c_str(), state->trans);
+        snprintf(buf, sizeof(buf)/sizeof(buf[0]), "\n%ld,%ld,%s,%ld", state->bytesWritten, state->durationMillis, p.second.c_str());
         sb.append(buf);
     }
     end = std::chrono::high_resolution_clock::now();
@@ -876,6 +878,7 @@ void NioPerfTest::serverStartNioLoops() {
     std::unique_lock<std::mutex> lk(bigFatLock);
     for(auto &loop : nioForLoops) {
         loop->tp = std::chrono::high_resolution_clock::now();
+        loop->tmp = 0;
         nioForLoopThreads.emplace_back([this, &loop](){
             this->serverRunLoop(*loop);
         });
@@ -904,6 +907,7 @@ void NioPerfTest::serverPrepareCb(struct ev_loop *loop, ev_prepare *w, int reven
     auto pprepare = (struct my_ev_prepare *)w;
     auto nioForLoop = pprepare->pNioForLoop;
     auto tmp = std::chrono::high_resolution_clock::now();
+    sc{}<<"came in prepare "<<++nioForLoop->tmp;
     auto durationNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(tmp-nioForLoop->tp).count();
     nioForLoop->totalLat.count(durationNanos);
     nioForLoop->tp = tmp;
@@ -912,6 +916,7 @@ void NioPerfTest::serverPrepareCb(struct ev_loop *loop, ev_prepare *w, int reven
 void NioPerfTest::serverCheckCb(struct ev_loop *loop, ev_check *w, int revents) {
     auto pcheck = (struct my_ev_check *)w;
     auto nioForLoop = pcheck->pNioForLoop;
+    sc{}<<"came in check "<<nioForLoop->tmp;
     auto tmp = std::chrono::high_resolution_clock::now();
     auto durationNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(tmp-nioForLoop->tp).count();
     nioForLoop->selectLat.count(durationNanos);
@@ -962,6 +967,8 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
     auto pstate = (ServerConnState *)w;
     auto pNioForLoop = pstate->pNioForLoop;
     unsigned int msg = testcaseObj["msg"];
+
+    sc{}<<"came in tcp_rr "<<pNioForLoop->tmp;
 
     // the first element is the beginning of the buffer
     // the standard guarantees that the elements are contiguous
