@@ -49,7 +49,6 @@ std::mutex sc::_mutexPrint{};
 
 struct ClientState {
     int sockfd;
-    long bytes, durationMillis;
     LatencyTimerThreadUnsafe rttLat;
 };
 
@@ -58,8 +57,7 @@ struct NioForLoop;
 struct ServerConnState {
     ev_io watcher;
     string clientIp;
-    long durationMillis=0;
-    long bytes=0;
+    long bytes=0, durationMillis=0, trans=0;
     shared_ptr<NioForLoop>pNioForLoop;
     vector<char> buffer;
     int bytesReadSoFar=0;
@@ -88,6 +86,7 @@ struct NioForLoop {
     LatencyTimerThreadUnsafe readLat;
     LatencyTimerThreadUnsafe writeLat;
     LatencyTimerThreadUnsafe totalLat;
+    int activeConns=0;
     long bytesRead=0;
     long durationMillis=0;
 };
@@ -179,6 +178,15 @@ static void check_cb (EV_P_ ev_check *w, int revents)
     pobj->serverCheckCb(loop, w, revents);
 }
 
+void closeWatcher(struct ev_loop *loop, ev_io* w, shared_ptr<NioForLoop>pNioForLoop) {
+    ev_io_stop(loop, w);
+    close(w->fd);
+    pNioForLoop->activeConns--;
+    if(pNioForLoop->activeConns==0) {
+        ev_prepare_stop(loop, &pNioForLoop->prepare.prepare);
+        ev_check_stop(loop, &pNioForLoop->check.check);
+    }
+}
 
 static pair<string, string> toStat(LatRet latRet, string const &p) {
     char fmt[1024] ;
@@ -528,6 +536,7 @@ void NioPerfTest::gateway() {
                 xmlrpc_c::paramList myParams;
                 sc{}<<"gateway about to call client result"<<endl;
                 rmi.call(uri, "myclient", myParams.addc("clientResult"), &result);
+                sc{}<<"gateway finished client result call "<<endl;
                 string r = xmlrpc_c::value_string(result);
                 clientRtt.push_back(r);
             }
@@ -540,12 +549,16 @@ void NioPerfTest::gateway() {
             xmlrpc_c::paramList myParams;
             rmi.call(serverUrl, "server", myParams.addc("serverResult"), &result);
             string r = xmlrpc_c::value_string(result);
-            sc{}<<"gateway: server result returned"<<r<<endl;
+            sc{}<<"gateway: server result returned"<<endl;
             auto rjson = nlohmann::json::parse(r);
             obj["serverNioLoops"] = rjson;
         }
-
-        sc{}<<"bleh"<<obj<<endl;
+        obj["completed"] = true;
+        sc{}<<endl;
+        sc{}<<endl;
+        sc{}<<endl;
+        sc{}<<endl;
+        //sc{}<<"bleh"<<obj<<endl;
 //        return;
 
         std::ofstream o("/home/sharath.g/cpp_netperf_tests/niotests");
@@ -590,10 +603,10 @@ void NioPerfTest::clientInit(const string & testcase) {
         }
         //sleep for 20 ms
         ev_sleep(0.02);
-        sc{}<<"client: connected to server."<<endl;
         clientStates.emplace_back(new ClientState);
         clientStates[clientStates.size()-1]->sockfd = sockfd;
     }
+    sc{}<<"client: connected to server: "<<connectionsPerClient<<endl;
 }
 
 void NioPerfTest::clientStart() {
@@ -614,7 +627,7 @@ void NioPerfTest::clientStart() {
 }
 
 void NioPerfTest::client_tcp_stream(ClientState& clientState) {
-    sc{}<<"client side start tcp stream"<<endl;
+    //sc{}<<"client side start tcp stream"<<endl;
     int msg = testcaseObj["msg"];
     int fd = clientState.sockfd;
     long long bytesWritten = 0;
@@ -622,7 +635,7 @@ void NioPerfTest::client_tcp_stream(ClientState& clientState) {
     int count = 0;
     char buffer[msg];
     while(true) {
-        if ((count &64)==0) {
+        if ((count &63)==0) {
             auto tmp = std::chrono::high_resolution_clock::now();
             auto durationMillis = std::chrono::duration_cast<std::chrono::milliseconds>(tmp-now).count();
             if(durationMillis >= timeMs) {
@@ -639,13 +652,16 @@ void NioPerfTest::client_tcp_stream(ClientState& clientState) {
 
         count++;
     }
-    sc{}<<"client side fini"<<endl;
+    close(fd);
 
+    //sleep for 20 ms between closes (dont know why)
+    ev_sleep(0.02);
     auto end = std::chrono::high_resolution_clock::now();
-
     auto durationMillis = std::chrono::duration_cast<std::chrono::milliseconds>(end-now).count();
+    sc{}<<"client side fini took ms: "<<durationMillis<<endl;
     clientState.bytes = bytesWritten;
     clientState.durationMillis = durationMillis;
+    clientState.trans = count;
 }
 
 void NioPerfTest::client_tcp_rr(ClientState& clientState) {
@@ -657,7 +673,7 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
     int count = 0;
     char buffer[msg];
     while(true) {
-        if ((count &64)==0) {
+        if ((count &63)==0) {
             auto tmp = std::chrono::high_resolution_clock::now();
             auto durationMillis = std::chrono::duration_cast<std::chrono::milliseconds>(tmp-now).count();
             if(durationMillis >= timeMs) {
@@ -666,7 +682,7 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
         }
         long tot = 0;
         while(tot < msg) {
-            long bytesNow = write(fd, buffer, msg);
+            long bytesNow = write(fd, buffer, msg-tot);
             if(bytesNow <= 0) {
                 perror("something went wrong in tcp_stream client write");
                 break;
@@ -677,7 +693,7 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
 
         tot = 0;
         while(tot < msg) {
-            long bytesNow = read(fd, buffer, msg);
+            long bytesNow = read(fd, buffer, msg-tot);
             if(bytesNow <= 0) {
                 perror("something went wrong in tcp_stream client write");
                 break;
@@ -687,15 +703,21 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
         clientState.rttLat.count();
         count++;
     }
-    sc{}<<"client side fini"<<endl;
+    close(fd);
+
+    //sleep for 20 ms between closes (dont know why)
+    ev_sleep(0.02);
     auto end = std::chrono::high_resolution_clock::now();
     auto durationMillis = std::chrono::duration_cast<std::chrono::milliseconds>(end-now).count();
+    sc{}<<"client side fini took ms: "<<durationMillis<<endl;
     clientState.bytes = bytesWritten;
     clientState.durationMillis = durationMillis;
+    clientState.trans = count;
 }
 
 
 string NioPerfTest::clientResult() {
+    auto now = std::chrono::high_resolution_clock::now();
     std::unique_lock<std::mutex> lk(bigFatLock);
 
 //    vector<ClientState> clientStates;
@@ -703,21 +725,22 @@ string NioPerfTest::clientResult() {
     for(auto &t: clientThreads) {
         t.join();
     }
+    auto end  = std::chrono::high_resolution_clock::now();
+    auto durationMillis = std::chrono::duration_cast<std::chrono::milliseconds>(end-now).count();
+    sc{}<<"client side clientResult joining threads took "<<durationMillis<<" ms "<<endl;
     char buf[1024];
 
-    string sb = "bytes,durationMillis,p50,p75Nanos,p90Nanos,p95Nanos,p99Nanos,p99.9Nanos,maxNanos,count";
+    string sb = "bytes,durationMillis,p50,p75Nanos,p90Nanos,p95Nanos,p99Nanos,p99.9Nanos,maxNanos,count,trans";
     for(auto &state: clientStates) {
 
-        close(state->sockfd);
-
-        //sleep for 20 ms between closes (dont know why)
-        ev_sleep(0.02);
         auto p = toStat(state->rttLat.snap(), "");
 
-        snprintf(buf, sizeof(buf)/sizeof(buf[0]), "\n%ld,%ld,%s", state->bytes, state->durationMillis, p.second.c_str());
+        snprintf(buf, sizeof(buf)/sizeof(buf[0]), "\n%ld,%ld,%s,%ld", state->bytes, state->durationMillis, p.second.c_str(), state->trans);
         sb.append(buf);
     }
-    sc{}<<"client side clientResult "<<endl;
+    end = std::chrono::high_resolution_clock::now();
+    durationMillis = std::chrono::duration_cast<std::chrono::milliseconds>(end-now).count();
+    sc{}<<"client side clientResult took "<<durationMillis<<" ms "<<endl;
     return sb;
 }
 
@@ -795,7 +818,7 @@ void NioPerfTest::serverInit(const string &testcase, int numClients) {
                 if (newsockfd < 0) {
                     perror("ERROR on accept");
                 }
-                sc{}<<"server sockfd is "<<newsockfd<<endl;
+                //sc{}<<"server sockfd is "<<newsockfd<<endl;
                 char hoststr[NI_MAXHOST];
                 char portstr[NI_MAXSERV];
                 getnameinfo((struct sockaddr *)&cli_addr,
@@ -807,6 +830,7 @@ void NioPerfTest::serverInit(const string &testcase, int numClients) {
                 auto whichLoop  = numClientsConnected % nioForLoops.size();
                 shared_ptr<NioForLoop>& nioForLoop = nioForLoops[whichLoop];
                 nioForLoops[whichLoop]->connStates.emplace_back(new ServerConnState);
+                nioForLoops[whichLoop]->activeConns++;
                 shared_ptr<ServerConnState>& state = nioForLoops[whichLoop]->connStates[nioForLoops[whichLoop]->connStates.size()-1];
                 state->pNioForLoop = nioForLoop;
                 state->clientIp=string(hoststr)+":"+string(portstr);
@@ -824,8 +848,9 @@ void NioPerfTest::serverInit(const string &testcase, int numClients) {
 
                 ev_io_start (nioForLoop->loop, &state->watcher);
                 numClientsConnected++;
-                sc{} << "server: accepted a client: "<<numClientsConnected<<" to loop "<<whichLoop<<endl;
+                //sc{} << "server: accepted a client: "<<numClientsConnected<<" to loop "<<whichLoop<<endl;
             }
+            sc{}<<"server accepted "<<totClients<<endl;
             close(sockfd);
         }
         serverInitCv.notify_all();
@@ -868,14 +893,10 @@ void NioPerfTest::serverRunLoop(NioForLoop& nioForLoop) {
     auto durationMillis = std::chrono::duration_cast<std::chrono::milliseconds>(y-x).count();
 
     for(auto &state:nioForLoop.connStates) {
-        ev_io_stop(nioForLoop.loop, &state->watcher);
-        close(state->watcher.fd);
         state->durationMillis = (durationMillis);
         nioForLoop.bytesRead+=state->bytes;
         nioForLoop.durationMillis = state->durationMillis;
     }
-    ev_prepare_stop(nioForLoop.loop, &nioForLoop.prepare.prepare);
-    ev_check_stop(nioForLoop.loop, &nioForLoop.check.check);
     ev_loop_destroy(nioForLoop.loop);
 }
 
@@ -910,7 +931,9 @@ void NioPerfTest::server_tcp_stream_cb(struct ev_loop *loop, ev_io *w, int reven
         long bytesNow = read(pstate->watcher.fd, buffer, msg - pstate->bytesReadSoFar);
         // check for eof
         if(bytesNow==0) {
-            ev_break(loop, EVBREAK_ONE);
+            // close this watcher. If everything is closed then the event loop should break automatically
+            // "A thing of beauty" according to the documentation
+            closeWatcher(loop, w, pNioForLoop);
             break;
         }
 
@@ -920,7 +943,7 @@ void NioPerfTest::server_tcp_stream_cb(struct ev_loop *loop, ev_io *w, int reven
             if(errno!=EAGAIN) {
                 // some unknown error, break the loop
                 perror("Soemthing went wrong in read()");
-                ev_break(loop, EVBREAK_ONE);
+                closeWatcher(loop, w, pNioForLoop);
             }
             break;
         }
@@ -932,6 +955,7 @@ void NioPerfTest::server_tcp_stream_cb(struct ev_loop *loop, ev_io *w, int reven
         pstate->bytesReadSoFar=0;
     }
 }
+
 
 void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) {
 
@@ -968,19 +992,25 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
 
             // if bytesNow > 0 but there is still space in the buffer, loop again
             // until we hit EAGAIN
+            if(bytesNow > 0) {
+                continue;
+            }
+
 
             // check for eof
             if(bytesNow==0) {
-                ev_break(loop, EVBREAK_ONE);
-                return;
+                // close this watcher. If everything is closed then the event loop should break automatically
+                // "A thing of beauty" according to the documentation
+                closeWatcher(loop, w, pNioForLoop);
+                break;
             }
 
             // came here implies bytesNow < 0
             // nothing to read now
             if(errno!=EAGAIN) {
                 // some unknown error, break the loop
-                perror("Soemthing went wrong in read() closing the nio loop");
-                ev_break(loop, EVBREAK_ONE);
+                perror((string("Soemthing went wrong in read() closing this watcher BytesNow: ")+std::to_string(bytesNow)).c_str());
+                closeWatcher(loop, w, pNioForLoop);
                 return;
             }
         }
@@ -1031,8 +1061,8 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
                 }
             } else {
                 // some unknown error, break the loop
-                perror("Soemthing went wrong in server tcp_rr write()");
-                ev_break(loop, EVBREAK_ONE);
+                perror("Soemthing went wrong in server tcp_rr write()"); 
+                closeWatcher(loop, w, pNioForLoop);
             }
             break;
 
@@ -1086,7 +1116,7 @@ void go(int argc, const char *argv[]) {
   server->go(argc, argv);
 }
 int main(int argc , const char * argv[]) {
-    doTest();
-   // go(argc, argv);
+     //doTest();
+    go(argc, argv);
     return 0;
 }
