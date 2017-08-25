@@ -671,7 +671,9 @@ void NioPerfTest::client_tcp_stream(ClientState& clientState) {
     long long bytesWritten = 0;
     auto now = std::chrono::high_resolution_clock::now();
     int count = 0;
-    char buffer[msg];
+    vector<char> buf;
+    buf.resize(msg, 0);
+    char *buffer = &buf[0];
     while(true) {
         if ((count &63)==0) {
             auto tmp = std::chrono::high_resolution_clock::now();
@@ -709,7 +711,9 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
     long long bytesWritten = 0;
     auto now = std::chrono::high_resolution_clock::now();
     long seq  = 1;
-    char buffer[msg];
+    vector<char> buf;
+    buf.resize(msg, 0);
+    char *buffer = &buf[0];
     while(true) {
         if ((seq &63)==0) {
             auto tmp = std::chrono::high_resolution_clock::now();
@@ -1078,7 +1082,7 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
     if(pstate->bytesReadSoFar==msg) {
         long seqNow = *((long *)buffer);
         if(seqNow != pstate->seq) {
-            sc{}<<"expected "<<pstate->seq<<" but got seq "<<seqNow<<endl;
+            sc{}<<"server expected "<<pstate->seq<<" but got seq "<<seqNow<<endl;
             throw "server bad seq number";
         }
         pstate->writing = !pstate->writing;
