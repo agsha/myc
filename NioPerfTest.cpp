@@ -653,7 +653,7 @@ void NioPerfTest::client_tcp_stream(ClientState& clientState) {
         long bytesNow = write(fd, buffer, msg);
 
         if(bytesNow < 0) {
-            perror("something went wrong in tcp_stream client write");
+            perror(string("something went wrong in tcp_stream client write: ").append(to_string(bytesNow)).c_str());
             exit(420);
             break;
         }
@@ -693,7 +693,7 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
         while(tot < msg) {
             long bytesNow = write(fd, buffer, msg-tot);
             if(bytesNow <= 0) {
-                perror("something went wrong in tcp_stream client write");
+                perror(string("something went wrong in tcp_rr client write: ").append(to_string(bytesNow)).c_str());
                 exit(420);
                 break;
             }
@@ -706,7 +706,7 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
         while(tot < msg) {
             long bytesNow = read(fd, buffer, msg-tot);
             if(bytesNow <= 0) {
-                perror("something went wrong in tcp_stream client write");
+                perror(string("something went wrong in tcp_rr client read: ").append(to_string(bytesNow)).c_str());
                 exit(420);
                 break;
             }
@@ -856,7 +856,7 @@ void NioPerfTest::serverInit(const string &testcase, int numClients) {
                 shared_ptr<ServerConnState>& state = nioForLoops[whichLoop]->connStates[nioForLoops[whichLoop]->connStates.size()-1];
                 state->pNioForLoop = nioForLoop;
                 state->clientIp=string(hoststr)+":"+string(portstr);
-                state->buffer.resize(msg, 0);
+                state->buffer.resize(msg, (char)0xff);
                 state->bytesReadSoFar = 0;
                 state->bytesRead = 0;
                 state->bytesWritten = 0;
