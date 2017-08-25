@@ -673,7 +673,7 @@ void NioPerfTest::client_tcp_stream(ClientState& clientState) {
 }
 
 void NioPerfTest::client_tcp_rr(ClientState& clientState) {
-    sc{}<<"client side start tcp stream"<<endl;
+    sc{}<<"client side start tcp rr"<<endl;
     int msg = testcaseObj["msg"];
     int fd = clientState.sockfd;
     long long bytesWritten = 0;
@@ -689,7 +689,7 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
             }
         }
         long tot = 0;
-        *(long *)buffer = seq++;
+        *(long *)buffer = seq;
         while(tot < msg) {
             long bytesNow = write(fd, buffer, msg-tot);
             if(bytesNow <= 0) {
@@ -751,7 +751,7 @@ string NioPerfTest::clientResult() {
 
         auto p = toStat(state->rttLat.snap(), "");
 
-        snprintf(buf, sizeof(buf)/sizeof(buf[0]), "\n%ld,%ld,%s,%ld", state->bytesWritten, state->durationMillis, p.second.c_str());
+        snprintf(buf, sizeof(buf)/sizeof(buf[0]), "\n%ld,%ld,%s", state->bytesWritten, state->durationMillis, p.second.c_str());
         sb.append(buf);
     }
     end = std::chrono::high_resolution_clock::now();
@@ -797,14 +797,16 @@ void NioPerfTest::serverInit(const string &testcase, int numClients) {
 
     // prepare for listening
     int sockfd =  socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0)
+    if (sockfd < 0) {
         perror("ERROR opening socket");
         exit(420);
+    }
+
     int yes = 1;
     if(setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes))==-1) {
         perror("server side setsockopt reuseaddr failed");
         exit(420);
-    };
+    }
 
 
     struct sockaddr_in serv_addr;
@@ -965,8 +967,8 @@ void NioPerfTest::server_tcp_stream_cb(struct ev_loop *loop, ev_io *w, int reven
             if(errno!=EAGAIN) {
                 // some unknown error, break the loop
                 perror("Soemthing went wrong in read()");
-                exit(420);
                 closeWatcher(loop, w, pNioForLoop);
+                exit(420);
             }
             break;
         }
@@ -1034,8 +1036,8 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
             if(errno!=EAGAIN) {
                 // some unknown error, break the loop
                 perror((string("Soemthing went wrong in read() closing this watcher BytesNow: ")+std::to_string(bytesNow)).c_str());
-                exit(420);
                 closeWatcher(loop, w, pNioForLoop);
+                exit(420);
                 return;
             }
         }
@@ -1047,7 +1049,6 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
             sc{}<<"expected "<<pstate->seq<<" but got seq "<<seqNow<<endl;
             throw "server bad seq number";
         }
-        pstate->seq++;
         pstate->writing = !pstate->writing;
         pstate->bytesReadSoFar=0;
     }
@@ -1093,8 +1094,8 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
             } else {
                 // some unknown error, break the loop
                 perror("Soemthing went wrong in server tcp_rr write()"); 
-                exit(420);
                 closeWatcher(loop, w, pNioForLoop);
+                exit(420);
             }
             break;
 
@@ -1102,6 +1103,7 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
     }
 
     if(pstate->bytesReadSoFar == msg) {
+        pstate->seq++;
         pstate->bytesReadSoFar = 0;
         pstate->writing = !pstate->writing;
     }
