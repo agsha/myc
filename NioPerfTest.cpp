@@ -126,7 +126,7 @@ public:
     void serverPrepareCb(EV_P_ ev_prepare *w, int revents);
     void serverCheckCb(EV_P_ ev_check *w, int revents);
 public:
-    string type;
+    string type, file;
     IpPort serverRmi, serverReal;
     vector<IpPort> clientRmis;
     long timeMs = 10000;
@@ -291,6 +291,7 @@ void NioPerfTest::go(unsigned long argc, const char *argv[]) {
     }
     pv(args);
     int argIndex = 0;
+    file = "/home/sharath.g/cpp_netperf_tests/niotests";
     while(argIndex < args.size()) {
         const string& arg = args[argIndex];
         if(arg.find("type")!=string::npos) {
@@ -298,6 +299,9 @@ void NioPerfTest::go(unsigned long argc, const char *argv[]) {
             argIndex++;
         } else if(arg == "serverReal") {
             serverReal =  parseIpPort(args[++argIndex], 8000)[0];
+            argIndex++;
+        } else if(arg == "file") {
+            file =  args[++argIndex];
             argIndex++;
         }  else if(arg == "serverRmi") {
             serverRmi = parseIpPort(args[++argIndex], serverRmiPort)[0];
@@ -358,7 +362,32 @@ void split(const string& s, char delim,vector<string>& v) {
 }
 
 
-void doTest() {
+void doTest(unsigned long argc, const char *argv[]) {
+    // skip progname and dotest
+    vector<string> args(argv+2, argv+argc);
+    if (argc==0) {
+        throw ("Usage: ./myc doTest clients 1 file /x/x/x/x.json");
+    }
+    pv(args);
+    int argIndex = 0;
+    string file = "/home/sharath.g/cpp_netperf_tests/niotests";
+    int clients = 1;
+    while(argIndex < args.size()) {
+        const string& arg = args[argIndex];
+        if(arg.find("file")!=string::npos) {
+            file = args[++argIndex];
+            argIndex++;
+        } else if(arg == "clients") {
+            clients =  stoi(args[++argIndex]);
+            argIndex++;
+        } else {
+            throw ("unknown arg: "+args[argIndex] );
+        }
+
+    }
+
+
+
     thread server([]{
         auto *server = new NioPerfTest;
         string s = "progname type server time 10 serverReal 127.0.0.1:8000";
@@ -373,7 +402,6 @@ void doTest() {
 
     ev_sleep(1.0);
 
-    int clients = 1;
     string a;
     vector<thread> clientThreads;
     for(int i=0; i<clients; i++) {
@@ -399,14 +427,14 @@ void doTest() {
 
     auto *gateway = new NioPerfTest;
 //    string s = "prog_name_placeholder type server time 10 serverReal 127.0.0.1:8000";
-    string s = "progname type gateway serverRmi 127.0.0.1:5001 clientRmis "+a;
+    string s = "progname type gateway serverRmi 127.0.0.1:5001 clientRmis "+a+" file "+file;
     vector<string> v;
     split(s, ' ', v);
-    const char *argv[v.size()];
+    const char *gatewayargv[v.size()];
     for(int i=0; i<v.size(); i++) {
-        argv[i] = strdup(v[i].c_str());
+        gatewayargv[i] = strdup(v[i].c_str());
     }
-    gateway->go(v.size(), argv);
+    gateway->go(v.size(), gatewayargv);
     server.join();
     for(auto &c: clientThreads) {
         c.join();
@@ -457,7 +485,7 @@ void NioPerfTest::gateway() {
     }
 
 
-    std::ifstream input("/home/sharath.g/cpp_netperf_tests/niotests");
+    std::ifstream input(file);
     std::stringstream sstr;
     while(input >> sstr.rdbuf());
     auto j3 = nlohmann::json::parse(sstr.str());
@@ -563,7 +591,7 @@ void NioPerfTest::gateway() {
         //sc{}<<"bleh"<<obj<<endl;
 //        return;
 
-        std::ofstream o("/home/sharath.g/cpp_netperf_tests/niotests");
+        std::ofstream o(file);
         o << std::setw(4) << j3 << std::endl;
         o.flush();
         o.close();
@@ -1150,7 +1178,10 @@ void go(int argc, const char *argv[]) {
   server->go(argc, argv);
 }
 int main(int argc , const char * argv[]) {
-     //doTest();
+    if(strcmp(argv[1], "doTest")==0) {
+        doTest(argc, argv);
+        return 0;
+    }
     go(argc, argv);
     return 0;
 }
