@@ -602,6 +602,8 @@ void NioPerfTest::gateway() {
 
 //        cout<<__LINE__<<" gatway starting a test case"<<endl;
     }
+    sc{}<<"done. nothing more to run"<<endl;
+    exit(0);
 
 }
 
@@ -799,6 +801,8 @@ void NioPerfTest::serverInit(const string &testcase, int numClients) {
     int connectionsPerClient = testcaseObj["connectionsPerClient"];
     totClients = connectionsPerClient*numClients;
     int nioloops = testcaseObj["nioloops"];
+    // cant have more loops than clients. Otherwise the loops wont terminate
+    nioloops = min(totClients, nioloops);
     int msg = testcaseObj["msg"];
     if(testcaseObj.count("time") > 0) {
         timeMs = testcaseObj["time"];
