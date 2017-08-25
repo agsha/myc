@@ -725,7 +725,7 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
         long tot = 0;
         *(long *)buffer = seq;
         while(tot < msg) {
-            long bytesNow = write(fd, buffer, msg-tot);
+            long bytesNow = write(fd, buffer+tot, msg-tot);
             if(bytesNow <= 0) {
                 perror(string("something went wrong in tcp_rr client write: ").append(to_string(bytesNow)).c_str());
                 exit(420);
@@ -738,7 +738,7 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
         tot = 0;
         *(long *)buffer = 0;
         while(tot < msg) {
-            long bytesNow = read(fd, buffer, msg-tot);
+            long bytesNow = read(fd, buffer+tot, msg-tot);
             if(bytesNow <= 0) {
                 perror(string("something went wrong in tcp_rr client read: ").append(to_string(bytesNow)).c_str());
                 exit(420);
@@ -1035,7 +1035,7 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
         while(true) {
             auto x = std::chrono::high_resolution_clock::now();
 
-            long bytesNow = read(pstate->watcher.fd, buffer, msg-pstate->bytesReadSoFar);
+            long bytesNow = read(pstate->watcher.fd, buffer+pstate->bytesReadSoFar, msg-pstate->bytesReadSoFar);
             auto y = std::chrono::high_resolution_clock::now();
             auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(y-x).count();
             pNioForLoop->readLat.count(nanos);
@@ -1092,7 +1092,7 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
         while(true) {
 
             auto x = std::chrono::high_resolution_clock::now();
-            long bytesNow = write(pstate->watcher.fd, buffer, msg-pstate->bytesReadSoFar);
+            long bytesNow = write(pstate->watcher.fd, buffer+pstate->bytesReadSoFar, msg-pstate->bytesReadSoFar);
             auto y = std::chrono::high_resolution_clock::now();
             auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(y-x).count();
 

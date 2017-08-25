@@ -91,9 +91,6 @@
 		<Unit filename="/Users/sharath.g/code/myc/CMakeLists.txt">
 			<Option virtualFolder="CMake Files\"/>
 		</Unit>
-		<Unit filename="/Users/sharath.g/code/myc/FindLibevent.cmake">
-			<Option virtualFolder="CMake Files\"/>
-		</Unit>
 		<Unit filename="/Users/sharath.g/code/myc/Findlibev.cmake">
 			<Option virtualFolder="CMake Files\"/>
 		</Unit>

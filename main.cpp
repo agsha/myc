@@ -92,4 +92,5 @@ int
 main1(void)
 {
     do2();
+    return 0;
 }
