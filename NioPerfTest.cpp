@@ -25,6 +25,7 @@
 #include <cassert>
 #include <stdexcept>
 #include <iostream>
+#include <stdlib.h>
 
 using namespace std;
 
@@ -49,7 +50,7 @@ std::mutex sc::_mutexPrint{};
 
 struct ClientState {
     int sockfd;
-    long bytesWritten=0, durationMillis=0;
+    long seq=1, bytesWritten=0, bytesRead=0, durationMillis=0;
     LatencyTimerThreadUnsafe rttLat;
 };
 
@@ -58,7 +59,7 @@ struct NioForLoop;
 struct ServerConnState {
     ev_io watcher;
     string clientIp;
-    long bytes=0, durationMillis=0;
+    long seq=1, bytesRead=0, bytesWritten=0, durationMillis=0;
     shared_ptr<NioForLoop>pNioForLoop;
     vector<char> buffer;
     int bytesReadSoFar=0;
@@ -90,7 +91,6 @@ struct NioForLoop {
     int activeConns=0;
     long bytesRead=0;
     long durationMillis=0;
-    long tmp = 0;
 };
 // uncomment to inspect these vectors (by preventing inlining
 //template class std::vector<shared_ptr<NioForLoop>>;
@@ -591,17 +591,21 @@ void NioPerfTest::clientInit(const string & testcase) {
 
     for(int i=0; i<connectionsPerClient; i++) {
         int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-        if (sockfd < 0)
+        if (sockfd < 0) {
             perror("ERROR opening client socket");
+            exit(420);
+        }
         struct sockaddr_in serv_addr;
         bzero((char *) &serv_addr, sizeof(serv_addr));
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_port = htons(serverReal.port);
         if(inet_pton(AF_INET, serverReal.ip.c_str(), &serv_addr.sin_addr)<=0) {
             perror("could not connect");
+            exit(420);
         }
         if (connect(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0){
             perror("client ERROR connecting");
+            exit(420);
         }
         //sleep for 20 ms
         ev_sleep(0.02);
@@ -650,6 +654,7 @@ void NioPerfTest::client_tcp_stream(ClientState& clientState) {
 
         if(bytesNow < 0) {
             perror("something went wrong in tcp_stream client write");
+            exit(420);
             break;
         }
         bytesWritten += bytesNow;
@@ -673,10 +678,10 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
     int fd = clientState.sockfd;
     long long bytesWritten = 0;
     auto now = std::chrono::high_resolution_clock::now();
-    int count = 0;
+    long seq  = 1;
     char buffer[msg];
     while(true) {
-        if ((count &63)==0) {
+        if ((seq &63)==0) {
             auto tmp = std::chrono::high_resolution_clock::now();
             auto durationMillis = std::chrono::duration_cast<std::chrono::milliseconds>(tmp-now).count();
             if(durationMillis >= timeMs) {
@@ -684,10 +689,12 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
             }
         }
         long tot = 0;
+        *(long *)buffer = seq++;
         while(tot < msg) {
             long bytesNow = write(fd, buffer, msg-tot);
             if(bytesNow <= 0) {
                 perror("something went wrong in tcp_stream client write");
+                exit(420);
                 break;
             }
             bytesWritten += bytesNow;
@@ -695,16 +702,23 @@ void NioPerfTest::client_tcp_rr(ClientState& clientState) {
         }
 
         tot = 0;
+        *(long *)buffer = 0;
         while(tot < msg) {
             long bytesNow = read(fd, buffer, msg-tot);
             if(bytesNow <= 0) {
                 perror("something went wrong in tcp_stream client write");
+                exit(420);
                 break;
             }
             tot+=bytesNow;
         }
+        long seqNow = *(long *)buffer;
+        if(seqNow != seq) {
+            sc{}<<"client side expected "<<seq<<" got "<<seqNow<<endl;
+            throw "client side unexpected seq";
+        }
         clientState.rttLat.count();
-        count++;
+        seq++;
     }
     close(fd);
 
@@ -785,9 +799,11 @@ void NioPerfTest::serverInit(const string &testcase, int numClients) {
     int sockfd =  socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0)
         perror("ERROR opening socket");
+        exit(420);
     int yes = 1;
     if(setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes))==-1) {
         perror("server side setsockopt reuseaddr failed");
+        exit(420);
     };
 
 
@@ -799,6 +815,7 @@ void NioPerfTest::serverInit(const string &testcase, int numClients) {
     if (conflict_bind(sockfd, (struct sockaddr *) &serv_addr,
                       sizeof(serv_addr)) < 0) {
         perror("ERROR on binding");
+        exit(420);
     }
     listen(sockfd,1024);
 
@@ -819,6 +836,7 @@ void NioPerfTest::serverInit(const string &testcase, int numClients) {
                                        (struct sockaddr *) &cli_addr, &clilen);
                 if (newsockfd < 0) {
                     perror("ERROR on accept");
+                    exit(420);
                 }
                 //sc{}<<"server sockfd is "<<newsockfd<<endl;
                 char hoststr[NI_MAXHOST];
@@ -836,12 +854,14 @@ void NioPerfTest::serverInit(const string &testcase, int numClients) {
                 shared_ptr<ServerConnState>& state = nioForLoops[whichLoop]->connStates[nioForLoops[whichLoop]->connStates.size()-1];
                 state->pNioForLoop = nioForLoop;
                 state->clientIp=string(hoststr)+":"+string(portstr);
-                state->buffer.reserve(msg);
+                state->buffer.resize(msg, 0);
                 state->bytesReadSoFar = 0;
-                state->bytes = 0;
+                state->bytesRead = 0;
+                state->bytesWritten = 0;
                 state->writing = false;
                 state->writeInterest = false;
                 state->watcher.data = this;
+                state->seq = 1;
                 if(testcaseObj["tt"]=="TCP_STREAM") {
                     ev_io_init (&state->watcher, tcp_stream_cb, newsockfd, EV_READ);
                 } else {
@@ -878,7 +898,6 @@ void NioPerfTest::serverStartNioLoops() {
     std::unique_lock<std::mutex> lk(bigFatLock);
     for(auto &loop : nioForLoops) {
         loop->tp = std::chrono::high_resolution_clock::now();
-        loop->tmp = 0;
         nioForLoopThreads.emplace_back([this, &loop](){
             this->serverRunLoop(*loop);
         });
@@ -897,7 +916,7 @@ void NioPerfTest::serverRunLoop(NioForLoop& nioForLoop) {
 
     for(auto &state:nioForLoop.connStates) {
         state->durationMillis = (durationMillis);
-        nioForLoop.bytesRead+=state->bytes;
+        nioForLoop.bytesRead+=state->bytesRead;
         nioForLoop.durationMillis = state->durationMillis;
     }
     ev_loop_destroy(nioForLoop.loop);
@@ -907,7 +926,6 @@ void NioPerfTest::serverPrepareCb(struct ev_loop *loop, ev_prepare *w, int reven
     auto pprepare = (struct my_ev_prepare *)w;
     auto nioForLoop = pprepare->pNioForLoop;
     auto tmp = std::chrono::high_resolution_clock::now();
-    sc{}<<"came in prepare "<<++nioForLoop->tmp;
     auto durationNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(tmp-nioForLoop->tp).count();
     nioForLoop->totalLat.count(durationNanos);
     nioForLoop->tp = tmp;
@@ -916,7 +934,6 @@ void NioPerfTest::serverPrepareCb(struct ev_loop *loop, ev_prepare *w, int reven
 void NioPerfTest::serverCheckCb(struct ev_loop *loop, ev_check *w, int revents) {
     auto pcheck = (struct my_ev_check *)w;
     auto nioForLoop = pcheck->pNioForLoop;
-    sc{}<<"came in check "<<nioForLoop->tmp;
     auto tmp = std::chrono::high_resolution_clock::now();
     auto durationNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(tmp-nioForLoop->tp).count();
     nioForLoop->selectLat.count(durationNanos);
@@ -948,13 +965,14 @@ void NioPerfTest::server_tcp_stream_cb(struct ev_loop *loop, ev_io *w, int reven
             if(errno!=EAGAIN) {
                 // some unknown error, break the loop
                 perror("Soemthing went wrong in read()");
+                exit(420);
                 closeWatcher(loop, w, pNioForLoop);
             }
             break;
         }
         pstate->bytesReadSoFar+=bytesNow;
         pNioForLoop->readLat.count();
-        pstate->bytes+=bytesNow;
+        pstate->bytesRead+=bytesNow;
     }
     if(pstate->bytesReadSoFar==msg) {
         pstate->bytesReadSoFar=0;
@@ -968,7 +986,6 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
     auto pNioForLoop = pstate->pNioForLoop;
     unsigned int msg = testcaseObj["msg"];
 
-    sc{}<<"came in tcp_rr "<<pNioForLoop->tmp;
 
     // the first element is the beginning of the buffer
     // the standard guarantees that the elements are contiguous
@@ -987,7 +1004,7 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
 
             if(bytesNow >= 0) {
                 pstate->bytesReadSoFar += bytesNow;
-                pstate->bytes+=bytesNow;
+                pstate->bytesRead+=bytesNow;
             }
 
             if(pstate->bytesReadSoFar == msg) {
@@ -1017,6 +1034,7 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
             if(errno!=EAGAIN) {
                 // some unknown error, break the loop
                 perror((string("Soemthing went wrong in read() closing this watcher BytesNow: ")+std::to_string(bytesNow)).c_str());
+                exit(420);
                 closeWatcher(loop, w, pNioForLoop);
                 return;
             }
@@ -1024,6 +1042,12 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
     }
 
     if(pstate->bytesReadSoFar==msg) {
+        long seqNow = *((long *)buffer);
+        if(seqNow != pstate->seq) {
+            sc{}<<"expected "<<pstate->seq<<" but got seq "<<seqNow<<endl;
+            throw "server bad seq number";
+        }
+        pstate->seq++;
         pstate->writing = !pstate->writing;
         pstate->bytesReadSoFar=0;
     }
@@ -1069,6 +1093,7 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
             } else {
                 // some unknown error, break the loop
                 perror("Soemthing went wrong in server tcp_rr write()"); 
+                exit(420);
                 closeWatcher(loop, w, pNioForLoop);
             }
             break;
