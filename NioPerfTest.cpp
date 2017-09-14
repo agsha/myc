@@ -117,6 +117,8 @@ public:
     vector<shared_ptr<NioForLoop>> nioForLoops;
     vector<thread> nioForLoopThreads;
     nlohmann::json testcaseObj; // the parsed current test case
+    int msg = 0; // technically, this is part of the parsed testcase above,
+                 // but dont want to invoke the json deser everytime, so caching this.
     void serverInit(const string&testcase, int numClients);
 
 
@@ -614,6 +616,7 @@ void NioPerfTest::clientInit(const string & testcase) {
     sc{}<<"client side clientInit acquired the bigfatlock"<<testcase<<endl;
 
     testcaseObj = nlohmann::json::parse(testcase);
+    msg = testcaseObj["msg"];
     int connectionsPerClient = testcaseObj["connectionsPerClient"];
 
     clientStates.clear();
@@ -706,7 +709,6 @@ void NioPerfTest::client_tcp_stream(ClientState& clientState) {
 
 void NioPerfTest::client_tcp_rr(ClientState& clientState) {
     sc{}<<"client side start tcp rr"<<endl;
-    int msg = testcaseObj["msg"];
     int fd = clientState.sockfd;
     long long bytesWritten = 0;
     auto now = std::chrono::high_resolution_clock::now();
@@ -802,12 +804,12 @@ void NioPerfTest::serverInit(const string &testcase, int numClients) {
     nioForLoopThreads.clear();
 
     testcaseObj = nlohmann::json::parse(testcase);
+    msg = testcaseObj["msg"];
     int connectionsPerClient = testcaseObj["connectionsPerClient"];
     totClients = connectionsPerClient*numClients;
     int nioloops = testcaseObj["nioloops"];
     // cant have more loops than clients. Otherwise the loops wont terminate
     nioloops = min(totClients, nioloops);
-    int msg = testcaseObj["msg"];
     if(testcaseObj.count("time") > 0) {
         timeMs = testcaseObj["time"];
     }
@@ -859,7 +861,7 @@ void NioPerfTest::serverInit(const string &testcase, int numClients) {
 
 
     // start the listening thread
-    thread t([sockfd, this, msg]() {
+    thread t([sockfd, this]() {
         {
             sc{}<<"server listen callback fired"<<" bigfatlock is "<<(long)&bigFatLock<<"This is "<<(long)this<<endl;
             std::unique_lock<std::mutex> lk(serverInitMutex);
@@ -944,7 +946,6 @@ void NioPerfTest::serverStartNioLoops() {
 
 
 void NioPerfTest::serverRunLoop(NioForLoop& nioForLoop) {
-    int msg = testcaseObj["msg"];
     auto x = std::chrono::high_resolution_clock::now();
     sc{} << "starting a single nio loop with message size "<<msg<<endl;
     ev_run(nioForLoop.loop, 0);
@@ -981,7 +982,6 @@ void NioPerfTest::server_tcp_stream_cb(struct ev_loop *loop, ev_io *w, int reven
 //    sc{}<<"came in event lo/op"<<endl;
     auto pstate = (ServerConnState *)w;
     auto pNioForLoop = pstate->pNioForLoop;
-    unsigned int msg = testcaseObj["msg"];
 
     // the first element is the beginning of the buffer
     // the standard guarantees that the elements are contiguous
@@ -1022,7 +1022,6 @@ void NioPerfTest::server_tcp_rr_cb(struct ev_loop *loop, ev_io *w, int revents) 
 
     auto pstate = (ServerConnState *)w;
     auto pNioForLoop = pstate->pNioForLoop;
-    unsigned int msg = testcaseObj["msg"];
 
 
     // the first element is the beginning of the buffer
